@@ -298,7 +298,7 @@ class Parser:
                         convert_subprocess_kwargs = {
                             "capture_output": True,
                             "text": True,
-                            "timeout": 60,  # 60 second timeout
+                            "timeout": 180,  # 180 second timeout (conversion can take 60s+ for large docs)
                             "encoding": "utf-8",
                             "errors": "ignore",
                         }

@@ -10,7 +10,7 @@ import re
 import time
 from typing import Dict, List, Any
 from pathlib import Path
-from lightrag import QueryParam
+from lightrag import QueryParam, LightRAG
 from lightrag.utils import always_get_an_event_loop
 from raganything.prompt import PROMPTS
 from raganything.utils import (
@@ -22,6 +22,55 @@ from raganything.utils import (
 
 class QueryMixin:
     """QueryMixin class containing query functionality for RAGAnything"""
+
+    async def _ensure_lightrag(self):
+        """Lazy-initialize LightRAG on first query if not already set up.
+
+        RAGAnything.__init__ only builds an empty shell; self.lightrag stays None
+        until a document has been inserted via aadd_documents. This means restarting
+        the server would otherwise make aquery fail even though rag_storage on disk
+        already holds data. This guard loads that existing data on first query.
+        """
+        if self.lightrag is not None:
+            return
+
+        self.logger.info(
+            "LightRAG not yet initialized — loading existing storage from working_dir: "
+            f"{self.working_dir}"
+        )
+
+        if self.llm_model_func is None:
+            raise ValueError(
+                "llm_model_func must be configured before running queries"
+            )
+
+        lightrag_params = {
+            "working_dir": self.working_dir,
+            "llm_model_func": self.llm_model_func,
+            "embedding_func": self.embedding_func,
+        }
+        lightrag_params.update(self.lightrag_kwargs)
+
+        log_params = {
+            k: v
+            for k, v in lightrag_params.items()
+            if not callable(v)
+            and k not in ["llm_model_kwargs", "vector_db_storage_cls_kwargs"]
+        }
+        self.logger.info(f"Initializing LightRAG (lazy, for query) with parameters: {log_params}")
+
+        try:
+            self.lightrag = LightRAG(**lightrag_params)
+            await self.lightrag.initialize_storages()
+            from lightrag.kg.shared_storage import initialize_pipeline_status
+
+            await initialize_pipeline_status()
+            self.logger.info("LightRAG initialized lazily from existing storage")
+        except Exception as e:
+            raise ValueError(
+                f"Failed to initialize LightRAG for query: {e}. "
+                f"Ensure rag_storage at {self.working_dir} is valid."
+            ) from e
 
     def _generate_multimodal_cache_key(
         self, query: str, multimodal_content: List[Dict[str, Any]], mode: str, **kwargs
@@ -117,10 +166,7 @@ class QueryMixin:
         Returns:
             str: Query result
         """
-        if self.lightrag is None:
-            raise ValueError(
-                "No LightRAG instance available. Please process documents first or provide a pre-initialized LightRAG instance."
-            )
+        await self._ensure_lightrag()
 
         # Check if VLM enhanced query should be used
         vlm_enhanced = kwargs.pop("vlm_enhanced", None)

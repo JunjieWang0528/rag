@@ -51,6 +51,9 @@ rag_storage*/
 examples/input/
 examples/output/
 output*/
+uploads/
+temp_test/
+web/
 
 # Miscellaneous
 .DS_Store

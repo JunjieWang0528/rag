@@ -94,9 +94,7 @@ class PaddleCloudClient:
         self.config = config
         self.config.validate()
         self._session = requests.Session()
-        self._session.headers.update(
-            {"Authorization": "Bearer " + self.config.token}
-        )
+        self._session.headers.update({"Authorization": "Bearer " + self.config.token})
 
     def _headers(self, json_body: bool) -> Dict[str, str]:
         headers: Dict[str, str] = {}
@@ -378,7 +376,9 @@ def markdown_to_content_list(
             return
         joined = "\n".join(buf).strip()
         if joined:
-            content_list.append({"type": "text", "text": joined, "page_idx": int(page_idx)})
+            content_list.append(
+                {"type": "text", "text": joined, "page_idx": int(page_idx)}
+            )
 
     pending_text: List[str] = []
     table_lines: List[str] = []
@@ -482,22 +482,19 @@ def markdown_to_content_list(
             captions: List[str] = []
             footnotes: List[str] = []
             j = i
-            blank_seen = False
             while j < n:
                 peek = lines[j].strip()
                 if not peek:
-                    blank_seen = True
+                    j += 1
                     j += 1
                     continue
                 if not captions and _looks_like_caption(peek):
                     captions.append(peek)
                     j += 1
-                    blank_seen = False
                     continue
                 if captions and _looks_like_footnote(peek):
                     footnotes.append(peek)
                     j += 1
-                    blank_seen = False
                     continue
                 break
             i = j
@@ -617,9 +614,7 @@ class PaddleCloudParser(Parser):
             return False
         return True
 
-    def _coerce_to_pdf(
-        self, file_path: Path, output_dir: Path
-    ) -> Optional[Path]:
+    def _coerce_to_pdf(self, file_path: Path, output_dir: Path) -> Optional[Path]:
         """Convert a format the cloud API does not accept directly to PDF.
 
         The PaddleOCR-VL cloud endpoint handles PDF, images and Office docs,
@@ -640,7 +635,9 @@ class PaddleCloudParser(Parser):
             return pdf_path
         except Exception as exc:
             raise RuntimeError(
-                "Failed to convert " + str(file_path) + " to PDF for cloud parsing: "
+                "Failed to convert "
+                + str(file_path)
+                + " to PDF for cloud parsing: "
                 + str(exc)
             ) from exc
 
@@ -649,9 +646,7 @@ class PaddleCloudParser(Parser):
             logger.info("PaddleOCR-VL job is pending...")
         elif state == "running":
             if total is not None and extracted is not None:
-                logger.info(
-                    "PaddleOCR-VL parsing: %s/%s pages", extracted, total
-                )
+                logger.info("PaddleOCR-VL parsing: %s/%s pages", extracted, total)
             else:
                 logger.info("PaddleOCR-VL job running...")
 
@@ -679,7 +674,10 @@ class PaddleCloudParser(Parser):
     ) -> List[Dict[str, Any]]:
         del method, lang
         file_path = Path(file_path)
-        if not str(file_path).startswith(("http://", "https://")) and not file_path.exists():
+        if (
+            not str(file_path).startswith(("http://", "https://"))
+            and not file_path.exists()
+        ):
             raise FileNotFoundError("File does not exist: " + str(file_path))
 
         base_dir = (
@@ -732,9 +730,16 @@ class PaddleCloudParser(Parser):
         # on it. The PaddleOCR-VL result for a raw image only yields OCR text;
         # without this block, multimodal_items would be empty and the image
         # signal would never reach the knowledge graph or VLM-enhanced query.
-        is_image = (
-            file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
-        )
+        is_image = file_path.suffix.lower() in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".webp",
+            ".tiff",
+            ".tif",
+        }
         if is_image:
             logger.info(
                 "Appending raw image block for VLM processing: %s",
@@ -762,7 +767,11 @@ class PaddleCloudParser(Parser):
         **kwargs,
     ) -> List[Dict[str, Any]]:
         return self.parse_document(
-            file_path=pdf_path, method=method, output_dir=output_dir, lang=lang, **kwargs
+            file_path=pdf_path,
+            method=method,
+            output_dir=output_dir,
+            lang=lang,
+            **kwargs,
         )
 
     def parse_image(
@@ -773,7 +782,11 @@ class PaddleCloudParser(Parser):
         **kwargs,
     ) -> List[Dict[str, Any]]:
         return self.parse_document(
-            file_path=image_path, method="auto", output_dir=output_dir, lang=lang, **kwargs
+            file_path=image_path,
+            method="auto",
+            output_dir=output_dir,
+            lang=lang,
+            **kwargs,
         )
 
     def parse_office_doc(
@@ -785,7 +798,11 @@ class PaddleCloudParser(Parser):
     ) -> List[Dict[str, Any]]:
         # The cloud API can ingest Office files directly; pass it through.
         return self.parse_document(
-            file_path=doc_path, method="auto", output_dir=output_dir, lang=lang, **kwargs
+            file_path=doc_path,
+            method="auto",
+            output_dir=output_dir,
+            lang=lang,
+            **kwargs,
         )
 
 

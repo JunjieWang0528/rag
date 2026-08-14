@@ -75,12 +75,12 @@
 ---
 
 ## 🎉 News
+- [X] [2026.08]🎯📢 🚀 **Enhanced Fork Released!** Added PaddleOCR-VL cloud parser, VLM-enhanced multimodal query, Web API service (app.py), and CLI demo tool (rag_demo.py). Enhanced image caption extraction with section path, neighbor text, and footnote metadata.
 - [X] [2026.06]🎯📢 🎉 [LightRAG](https://github.com/HKUDS/LightRAG) enables multimodal RAG through native integration of RAG-Anything.
 - [X] [2025.10]🎯📢 🚀 We have released the technical report of [RAG-Anything](http://arxiv.org/abs/2510.12323). Access it now to explore our latest research findings.
 - [X] [2025.08]🎯📢 🔍 RAG-Anything now features **VLM-Enhanced Query** mode! When documents include images, the system seamlessly integrates them into VLM for advanced multimodal analysis, combining visual and textual context for deeper insights.
 - [X] [2025.07]🎯📢 RAG-Anything now features a [context configuration module](docs/context_aware_processing.md), enabling intelligent integration of relevant contextual information to enhance multimodal content processing.
 - [X] [2025.07]🎯📢 🚀 RAG-Anything now supports multimodal query capabilities, enabling enhanced RAG with seamless processing of text, images, tables, and equations.
-- [X] [2025.07]🎯📢 🎉 RAG-Anything has reached 1k🌟 stars on GitHub! Thank you for your incredible support and valuable contributions to the project.
 
 ---
 
@@ -106,9 +106,12 @@ Users can query documents containing **interleaved text**, **visual diagrams**, 
 
 - **🔄 End-to-End Multimodal Pipeline** - Complete workflow from document ingestion and parsing to intelligent multimodal query answering
 - **📄 Universal Document Support** - Seamless processing of PDFs, Office documents, images, and diverse file formats
+- **☁️ PaddleOCR-VL Cloud Parser** - Cloud-based document parsing via PaddleOCR-VL API with high-fidelity layout extraction, OCR, and image caption/footnote/section context discovery
 - **🧠 Specialized Content Analysis** - Dedicated processors for images, tables, mathematical equations, and heterogeneous content types
 - **🔗 Multimodal Knowledge Graph** - Automatic entity extraction and cross-modal relationship discovery for enhanced understanding
-- **⚡ Adaptive Processing Modes** - Flexible MinerU-based parsing or direct multimodal content injection workflows
+- **🖼️ VLM-Enhanced Query** - Automatically encodes retrieved images as base64 and sends them to Vision-Language Models for comprehensive multimodal analysis
+- **🌐 Web API Service** - Built-in FastAPI web service (`app.py`) for RAG query with VLM multimodal support
+- **⚡ Adaptive Processing Modes** - Flexible MinerU, Docling, PaddleOCR, or PaddleOCR-VL cloud parsing workflows
 - **📋 Direct Content List Insertion** - Bypass document parsing by directly inserting pre-parsed content lists from external sources
 - **🎯 Hybrid Intelligent Retrieval** - Advanced search capabilities spanning textual and multimodal content with contextual understanding
 
@@ -279,8 +282,8 @@ pip install 'raganything[image,text]'       # Multiple features
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup the project with uv
-git clone https://github.com/HKUDS/RAG-Anything.git
-cd RAG-Anything
+git clone https://github.com/JunjieWang0528/rag.git
+cd rag
 
 # Install the package and dependencies in a virtual environment
 uv sync
@@ -341,8 +344,8 @@ async def main():
     # Create RAGAnything configuration
     config = RAGAnythingConfig(
         working_dir="./rag_storage",
-        parser="mineru",  # Parser selection: mineru, docling, or paddleocr
-        parse_method="auto",  # Parse method: auto, ocr, or txt
+        parser="paddlecloud",  # Parser selection: mineru, docling, paddleocr, or paddlecloud
+        parse_method="auto",
         enable_image_processing=True,
         enable_table_processing=True,
         enable_equation_processing=True,
@@ -1013,32 +1016,24 @@ The `examples/` directory contains comprehensive usage examples:
 - **`image_format_test.py`**: Image format parsing test with MinerU (no API key required)
 - **`text_format_test.py`**: Text format parsing test with MinerU (no API key required)
 
+**New demo tools (root directory):**
+- **`app.py`**: FastAPI web service with VLM multimodal query support — start with `python app.py`
+- **`rag_demo.py`**: Command-line interactive RAG demo — run with `python rag_demo.py`
+- **`e2e_test.py`**: End-to-end pipeline test
+- **`probe_query.py`**: Query probe utility for debugging retrieval results
+- **`reupload.py`**: Re-upload/re-parse utility for updating documents
+
 **Run examples:**
 
 ```bash
 # End-to-end processing with parser selection
 python examples/raganything_example.py path/to/document.pdf --api-key YOUR_API_KEY --parser mineru
 
-# Direct modal processing
-python examples/modalprocessors_example.py --api-key YOUR_API_KEY
+# Start the Web API service
+python app.py
 
-# Office document parsing test (MinerU only)
-python examples/office_document_test.py --file path/to/document.docx
-
-# Image format parsing test (MinerU only)
-python examples/image_format_test.py --file path/to/image.bmp
-
-# Text format parsing test (MinerU only)
-python examples/text_format_test.py --file path/to/document.md
-
-# Check LibreOffice installation
-python examples/office_document_test.py --check-libreoffice --file dummy
-
-# Check PIL/Pillow installation
-python examples/image_format_test.py --check-pillow --file dummy
-
-# Check ReportLab installation
-python examples/text_format_test.py --check-reportlab --file dummy
+# Run the CLI RAG demo
+python rag_demo.py
 ```
 
 ---
@@ -1055,8 +1050,12 @@ Create a `.env` file (refer to `.env.example`):
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=your_base_url  # Optional
 OUTPUT_DIR=./output             # Default output directory for parsed documents
-PARSER=mineru                   # Parser selection: mineru, docling, or paddleocr
+PARSER=mineru                   # Parser selection: mineru, docling, paddleocr, or paddlecloud
 PARSE_METHOD=auto              # Parse method: auto, ocr, or txt
+
+# PaddleOCR-VL Cloud Parser (PARSER=paddlecloud)
+PADDLE_CLOUD_TOKEN=your_api_token
+PADDLE_CLOUD_MODEL=PaddleOCR-VL-1.6
 ```
 
 **Note:** For backward compatibility, legacy environment variable names are still supported:
@@ -1097,7 +1096,7 @@ RAGAnything now supports multiple parsers, each with specific advantages:
 - Better document structure preservation
 - Native support for multiple Office formats
 
-#### PaddleOCR Parser
+#### PaddleOCR Parser (Local)
 - OCR-focused parser for images and PDFs
 - Produces text blocks compatible with existing `content_list` processing
 - Supports optional Office/TXT/MD parsing by converting to PDF first
@@ -1111,6 +1110,43 @@ uv sync --extra paddleocr
 ```
 
 > **Note**: PaddleOCR also requires `paddlepaddle` (CPU/GPU package varies by platform). Install it with the official guide: https://www.paddlepaddle.org.cn/install/quick
+
+#### PaddleOCR-VL Cloud Parser (New)
+
+A cloud-based parser that leverages the PaddleOCR-VL API for high-fidelity document parsing. Ideal for environments without GPU or when MinerU is not available.
+
+**Key Features:**
+- No local GPU required — processing happens on the cloud
+- Supports PDF, images, and Office documents (.docx, .pptx, .xlsx)
+- Automatic conversion of unsupported formats (.txt, .md) to PDF
+- **Enhanced image metadata extraction**: automatically discovers image captions, footnotes, section paths, and surrounding text context for better retrieval
+- Produces standard MinerU-compatible content_list
+
+**Setup:**
+```bash
+# Set the required environment variable
+export PADDLE_CLOUD_TOKEN=your-api-token
+export PADDLE_CLOUD_MODEL=PaddleOCR-VL-1.6  # Optional, default
+```
+
+**Usage:**
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+
+config = RAGAnythingConfig(
+    working_dir="./rag_storage",
+    parser="paddlecloud",  # Select PaddleOCR-VL cloud parser
+)
+```
+
+**Configuration via environment variables:**
+| Variable | Default | Description |
+|---|---|---|
+| `PADDLE_CLOUD_TOKEN` | (required) | API bearer token |
+| `PADDLE_CLOUD_MODEL` | `PaddleOCR-VL-1.6` | Model version |
+| `PADDLE_CLOUD_URL` | `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs` | API endpoint |
+| `PADDLE_CLOUD_POLL` | `5` | Poll interval (seconds) |
+| `PADDLE_CLOUD_TIMEOUT` | `120` | Request timeout (seconds) |
 
 ### MinerU Configuration
 
@@ -1265,20 +1301,6 @@ If you find RAG-Anything useful in your research, please cite our paper:
 
 ---
 
-## ⭐ Star History
-
-*Community Growth Trajectory*
-
-<div align="center">
-  <a href="https://star-history.com/#HKUDS/RAG-Anything&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=HKUDS/RAG-Anything&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=HKUDS/RAG-Anything&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=HKUDS/RAG-Anything&type=Date" style="border-radius: 15px; box-shadow: 0 0 30px rgba(0, 217, 255, 0.3);" />
-    </picture>
-  </a>
-</div>
-
 ---
 
 ## 🤝 Contribution
@@ -1302,14 +1324,11 @@ If you find RAG-Anything useful in your research, please cite our paper:
     <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="500">
   </div>
   <div style="margin-top: 20px;">
-    <a href="https://github.com/HKUDS/RAG-Anything" style="text-decoration: none;">
-      <img src="https://img.shields.io/badge/⭐%20Star%20us%20on%20GitHub-1a1a2e?style=for-the-badge&logo=github&logoColor=white">
+    <a href="https://github.com/JunjieWang0528/rag" style="text-decoration: none;">
+      <img src="https://img.shields.io/badge/⭐%20Star%20on%20GitHub-1a1a2e?style=for-the-badge&logo=github&logoColor=white">
     </a>
-    <a href="https://github.com/HKUDS/RAG-Anything/issues" style="text-decoration: none;">
+    <a href="https://github.com/JunjieWang0528/rag/issues" style="text-decoration: none;">
       <img src="https://img.shields.io/badge/🐛%20Report%20Issues-ff6b6b?style=for-the-badge&logo=github&logoColor=white">
-    </a>
-    <a href="https://github.com/HKUDS/RAG-Anything/discussions" style="text-decoration: none;">
-      <img src="https://img.shields.io/badge/💬%20Discussions-4ecdc4?style=for-the-badge&logo=github&logoColor=white">
     </a>
   </div>
 </div>
@@ -1318,7 +1337,7 @@ If you find RAG-Anything useful in your research, please cite our paper:
   <div style="width: 100%; max-width: 600px; margin: 20px auto; padding: 20px; background: linear-gradient(135deg, rgba(0, 217, 255, 0.1) 0%, rgba(0, 217, 255, 0.05) 100%); border-radius: 15px; border: 1px solid rgba(0, 217, 255, 0.2);">
     <div style="display: flex; justify-content: center; align-items: center; gap: 15px;">
       <span style="font-size: 24px;">⭐</span>
-      <span style="color: #00d9ff; font-size: 18px;">Thank you for visiting RAG-Anything!</span>
+      <span style="color: #00d9ff; font-size: 18px;">Thank you for visiting RAG-Anything (Enhanced Fork)!</span>
       <span style="font-size: 24px;">⭐</span>
     </div>
     <div style="margin-top: 10px; color: #00d9ff; font-size: 16px;">Building the Future of Multimodal AI</div>

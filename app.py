@@ -10,9 +10,12 @@ RAG-Anything Web 应用
 或直接（端口由 .env 的 HOST / PORT 决定，默认 9621）：
     python app.py
 """
+
 import asyncio
 import json
 import os
+import re
+import base64
 import shutil
 import threading
 import time
@@ -20,6 +23,7 @@ import uuid
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -32,8 +36,13 @@ load_dotenv()
 
 from raganything import RAGAnything, RAGAnythingConfig
 from raganything.parser_paddle_cloud import PaddleCloudParser  # noqa: F401 (registers "paddlecloud")
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from raganything.utils import query_instruct_ctx
+from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.rerank import ali_rerank
 from lightrag.utils import EmbeddingFunc
+import numpy as np
+import dashscope
+from http import HTTPStatus
 
 # ---------------------------------------------------------------------------
 # 路径配置
@@ -49,9 +58,23 @@ WORKING_DIR.mkdir(exist_ok=True)
 
 # 支持的扩展名（与 config 中默认值保持一致）
 SUPPORTED_EXT = {
-    ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif",
-    ".gif", ".webp", ".doc", ".docx", ".ppt", ".pptx",
-    ".xls", ".xlsx", ".txt", ".md",
+    ".pdf",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".gif",
+    ".webp",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".txt",
+    ".md",
 }
 
 # ---------------------------------------------------------------------------
@@ -62,6 +85,7 @@ BASE_URL = os.getenv("LLM_BINDING_HOST")
 LLM_MODEL = os.getenv("LLM_MODEL")
 EMB_MODEL = os.getenv("EMBEDDING_MODEL")
 EMB_DIM = int(os.getenv("EMBEDDING_DIM", "2048"))
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_BINDING_API_KEY")
 
 # Document parser: "paddlecloud" (PaddleOCR-VL cloud API) by default,
 # overridable via the PARSER environment variable.
@@ -71,7 +95,8 @@ DOC_PARSER = os.getenv("PARSER", "paddlecloud")
 def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
     """LLM 调用函数（豆包 doubao-seed-evolving）"""
     return openai_complete_if_cache(
-        LLM_MODEL, prompt,
+        LLM_MODEL,
+        prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=API_KEY,
@@ -80,40 +105,133 @@ def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
     )
 
 
-def vision_model_func(prompt, system_prompt=None, history_messages=[], image_data=None, messages=None, **kwargs):
+def vision_model_func(
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    image_data=None,
+    messages=None,
+    **kwargs,
+):
     """视觉模型调用函数（用于图片理解）"""
     if messages:
         return openai_complete_if_cache(
-            LLM_MODEL, "", system_prompt=None, history_messages=[],
-            messages=messages, api_key=API_KEY, base_url=BASE_URL, **kwargs,
+            LLM_MODEL,
+            "",
+            system_prompt=None,
+            history_messages=[],
+            messages=messages,
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            **kwargs,
         )
     elif image_data:
         return openai_complete_if_cache(
-            LLM_MODEL, "", system_prompt=None, history_messages=[],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
-                ],
-            }],
-            api_key=API_KEY, base_url=BASE_URL, **kwargs,
+            LLM_MODEL,
+            "",
+            system_prompt=None,
+            history_messages=[],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_data}"
+                            },
+                        },
+                    ],
+                }
+            ],
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            **kwargs,
         )
     else:
         return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
 
 
+async def _qwen3_vl_embed(
+    texts: list[str], api_key: str | None = None, **kwargs
+) -> np.ndarray:
+    """使用 DashScope SDK 调用 qwen3-vl-embedding，enable_fusion=true，1024维
+
+    自动检测文本中的 Image Path: 行，若有则读取图片文件并作为 image 参数传入，
+    实现真正的图文融合向量嵌入。
+
+    注意：enable_fusion=true 时 dashscope 会把整个 input 列表融合成一个向量，
+    因此必须逐条调用 API，不能批量。
+    """
+    dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+
+    IMG_RE = re.compile(
+        r"Image Path: (.+\.(png|jpg|jpeg|gif|webp|bmp|tiff|svg))", re.IGNORECASE
+    )
+    MIME_MAP = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "bmp": "image/bmp",
+        "tiff": "image/tiff",
+        "svg": "image/svg+xml",
+    }
+
+    async def _call_one(text: str) -> list[float]:
+        m = IMG_RE.search(text)
+        if m:
+            img_path = m.group(1)
+            clean_text = IMG_RE.sub("", text)
+            try:
+                with open(img_path, "rb") as f:
+                    raw = f.read()
+                ext = img_path.rsplit(".", 1)[-1].lower()
+                img_b64 = "data:{};base64,{}".format(
+                    MIME_MAP.get(ext, "image/png"),
+                    base64.b64encode(raw).decode("utf-8"),
+                )
+                inp = [{"text": clean_text, "image": img_b64}]
+            except FileNotFoundError:
+                inp = [{"text": text}]
+        else:
+            inp = [{"text": text}]
+
+        # 根据调用上下文自动选择 text_type：
+        # LightRAG 在查询时传入 context="query"，索引时传入 context="document"
+        text_type = "query" if kwargs.get("context") == "query" else "document"
+
+        # 读取 LLM 生成的 instruct（查询时由 aquery 设置上下文变量）
+        instruct = query_instruct_ctx.get() if text_type == "query" else None
+
+        call_kwargs = dict(
+            api_key=api_key,
+            model="qwen3-vl-embedding",
+            input=inp,
+            text_type=text_type,
+            enable_fusion=True,
+            dimension=1024,
+        )
+        if instruct:
+            call_kwargs["instruct"] = instruct
+
+        resp = dashscope.MultiModalEmbedding.call(**call_kwargs)
+        if resp.status_code != HTTPStatus.OK:
+            raise RuntimeError(f"Embedding API error: {resp}")
+        return resp.output["embeddings"][0]["embedding"]
+
+    results = await asyncio.gather(*[_call_one(t) for t in texts])
+    return np.array(results, dtype=np.float32)
+
+
 def embedding_func():
-    """Embedding 函数（doubao-embedding-vision）"""
+    """Embedding 函数（qwen3-vl-embedding，enable_fusion=true，1024维）"""
     return EmbeddingFunc(
         embedding_dim=EMB_DIM,
         max_token_size=8192,
-        func=partial(
-            openai_embed.func,
-            model=EMB_MODEL,
-            api_key=API_KEY,
-            base_url=BASE_URL,
-        ),
+        func=partial(_qwen3_vl_embed, api_key=EMBEDDING_API_KEY),
     )
 
 
@@ -142,6 +260,23 @@ def get_rag() -> RAGAnything:
                 llm_model_func=llm_model_func,
                 vision_model_func=vision_model_func,
                 embedding_func=embedding_func(),
+                lightrag_kwargs={
+                    "kv_storage": os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
+                    "vector_storage": os.getenv(
+                        "LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"
+                    ),
+                    "doc_status_storage": os.getenv(
+                        "LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"
+                    ),
+                    "graph_storage": os.getenv(
+                        "LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"
+                    ),
+                    "rerank_model_func": partial(
+                        ali_rerank,
+                        model="qwen3-vl-rerank",
+                        api_key=EMBEDDING_API_KEY,
+                    ),
+                },
             )
         return _rag
 
@@ -161,7 +296,7 @@ class TaskStore:
         with self._lock:
             self._tasks[task_id] = {
                 "id": task_id,
-                "status": "pending",          # pending / processing / done / failed
+                "status": "pending",  # pending / processing / done / failed
                 "message": "排队中",
                 "files": [],
                 "created_at": datetime.now().isoformat(),
@@ -184,7 +319,9 @@ class TaskStore:
 
     def all(self):
         with self._lock:
-            return sorted(self._tasks.values(), key=lambda t: t["created_at"], reverse=True)
+            return sorted(
+                self._tasks.values(), key=lambda t: t["created_at"], reverse=True
+            )
 
 
 tasks = TaskStore()
@@ -207,6 +344,7 @@ app.add_middleware(
 class QueryRequest(BaseModel):
     question: str
     mode: str = "hybrid"
+    images: Optional[List[str]] = None  # base64 编码的图片列表
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -219,7 +357,7 @@ def _load_index_html() -> str:
     html_path = BASE_DIR / "web" / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
-    return f"<h1>未找到前端页面 web/index.html</h1>"
+    return "<h1>未找到前端页面 web/index.html</h1>"
 
 
 @app.get("/health")
@@ -293,12 +431,14 @@ async def upload(files: list[UploadFile] = File(...)):
     # 后台异步处理，避免阻塞请求
     asyncio.get_running_loop().create_task(_process_files_async(task_id, save_paths))
 
-    return JSONResponse({
-        "task_id": task_id,
-        "status": "accepted",
-        "message": f"已接收 {len(files)} 个文件，处理中...",
-        "files": [Path(p).name for p in save_paths],
-    })
+    return JSONResponse(
+        {
+            "task_id": task_id,
+            "status": "accepted",
+            "message": f"已接收 {len(files)} 个文件，处理中...",
+            "files": [Path(p).name for p in save_paths],
+        }
+    )
 
 
 @app.get("/task/{task_id}")
@@ -314,13 +454,17 @@ async def get_task(task_id: str):
 async def list_files():
     """列出已上传的文件"""
     results = []
-    for p in sorted(UPLOAD_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+    for p in sorted(
+        UPLOAD_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True
+    ):
         if p.is_file():
-            results.append({
-                "name": p.name,
-                "size": p.stat().st_size,
-                "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
-            })
+            results.append(
+                {
+                    "name": p.name,
+                    "size": p.stat().st_size,
+                    "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+                }
+            )
     return {"files": results}
 
 
@@ -339,15 +483,17 @@ async def list_knowledge():
                 continue
             if meta.get("status") not in ("processed", "done", "completed"):
                 continue
-            docs.append({
-                "doc_id": doc_id,
-                "name": meta.get("file_path", doc_id),
-                "status": meta.get("status", "processed"),
-                "chunks_count": meta.get("chunks_count", 0),
-                "content_length": meta.get("content_length", 0),
-                "created_at": meta.get("created_at", ""),
-                "content_summary": (meta.get("content_summary", "") or "")[:200],
-            })
+            docs.append(
+                {
+                    "doc_id": doc_id,
+                    "name": meta.get("file_path", doc_id),
+                    "status": meta.get("status", "processed"),
+                    "chunks_count": meta.get("chunks_count", 0),
+                    "content_length": meta.get("content_length", 0),
+                    "created_at": meta.get("created_at", ""),
+                    "content_summary": (meta.get("content_summary", "") or "")[:200],
+                }
+            )
     return {"docs": docs, "count": len(docs)}
 
 
@@ -382,17 +528,48 @@ async def delete_knowledge(doc_id: str):
 
 @app.post("/query")
 async def query(req: QueryRequest):
-    """RAG 检索回答"""
+    """RAG 检索回答（支持文字+图片查询）"""
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
 
+    # 处理 base64 图片
+    image_paths = []
+    if req.images:
+        query_img_dir = UPLOAD_DIR / "query_images"
+        query_img_dir.mkdir(parents=True, exist_ok=True)
+        for i, b64_str in enumerate(req.images):
+            match = re.match(r"^data:image/(\w+);base64,(.+)$", b64_str)
+            if match:
+                ext = match.group(1)
+                raw_data = match.group(2)
+            else:
+                ext = "png"
+                raw_data = b64_str
+            img_bytes = base64.b64decode(raw_data)
+            file_name = f"{uuid.uuid4().hex}.{ext}"
+            file_path = query_img_dir / file_name
+            file_path.write_bytes(img_bytes)
+            image_paths.append(str(file_path))
+
     try:
         rag = get_rag()
-        result = await rag.aquery(question, mode=req.mode)
+        if image_paths:
+            result = await rag.aquery_with_user_images(
+                question, user_image_paths=image_paths, mode=req.mode
+            )
+        else:
+            result = await rag.aquery(question, mode=req.mode)
         return {"answer": result, "mode": req.mode, "question": question}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"查询失败: {exc}")
+    finally:
+        # 清理临时图片
+        for p in image_paths:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

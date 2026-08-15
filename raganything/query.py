@@ -17,6 +17,7 @@ from raganything.utils import (
     get_processor_for_type,
     encode_image_to_base64,
     validate_image_file,
+    query_instruct_ctx,
 )
 
 
@@ -40,9 +41,7 @@ class QueryMixin:
         )
 
         if self.llm_model_func is None:
-            raise ValueError(
-                "llm_model_func must be configured before running queries"
-            )
+            raise ValueError("llm_model_func must be configured before running queries")
 
         lightrag_params = {
             "working_dir": self.working_dir,
@@ -57,7 +56,9 @@ class QueryMixin:
             if not callable(v)
             and k not in ["llm_model_kwargs", "vector_db_storage_cls_kwargs"]
         }
-        self.logger.info(f"Initializing LightRAG (lazy, for query) with parameters: {log_params}")
+        self.logger.info(
+            f"Initializing LightRAG (lazy, for query) with parameters: {log_params}"
+        )
 
         try:
             self.lightrag = LightRAG(**lightrag_params)
@@ -168,6 +169,20 @@ class QueryMixin:
         """
         await self._ensure_lightrag()
 
+        # 用 LLM 生成 instruct，优化查询 embedding 质量
+        instruct = await self._generate_instruct(query)
+        token = query_instruct_ctx.set(instruct)
+        try:
+            return await self._aquery_inner(
+                query, mode=mode, system_prompt=system_prompt, **kwargs
+            )
+        finally:
+            query_instruct_ctx.reset(token)
+
+    async def _aquery_inner(
+        self, query: str, mode: str = "mix", system_prompt: str | None = None, **kwargs
+    ) -> str:
+        """aquery 内部实现，在 instruct 上下文保护下执行"""
         # Check if VLM enhanced query should be used
         vlm_enhanced = kwargs.pop("vlm_enhanced", None)
 
@@ -237,6 +252,32 @@ class QueryMixin:
                 result_length=result_len,
             )
         return result
+
+    async def _generate_instruct(self, query: str) -> str | None:
+        """
+        使用 LLM 从用户查询中生成 instruct（任务指令），用于优化 embedding 检索质量。
+
+        Instruct 告诉 embedding 模型当前检索任务的类型，让向量更针对性。
+        例如：查询"机器学习论文" -> instruct="Given a research paper query, retrieve relevant research paper"
+
+        如果 LLM 不可用或生成失败，返回 None（使用默认 behavior）。
+        """
+        llm = getattr(self, "llm_model_func", None)
+        if not llm:
+            return None
+
+        try:
+            prompt = PROMPTS["INSTRUCT_GENERATION"].format(query=query.strip())
+            result = await llm(prompt, system_prompt="You are a helpful assistant.")
+            instruct = result.strip().strip('"\'')
+            if instruct:
+                self.logger.info(
+                    f"Generated instruct for query [{query[:60]}...]: {instruct}"
+                )
+                return instruct
+        except Exception as e:
+            self.logger.warning(f"Failed to generate instruct: {e}")
+        return None
 
     async def aquery_with_multimodal(
         self,
@@ -463,6 +504,114 @@ class QueryMixin:
         result = await self._call_vlm_with_multimodal_content(messages)
 
         self.logger.info("VLM enhanced query completed")
+        return result
+
+    async def aquery_with_user_images(
+        self,
+        query: str,
+        user_image_paths: List[str] = None,
+        mode: str = "mix",
+        system_prompt: str | None = None,
+        **kwargs,
+    ) -> str:
+        """
+        User image query - combines user-uploaded images with knowledge base
+        retrieval for comprehensive VLM answering.
+
+        Flow:
+        1. LightRAG retrieves relevant context from knowledge base (text only)
+        2. Scans context for Image Path: markers, encodes KB images to base64
+        3. Encodes user-provided images to base64
+        4. Builds multimodal messages: context + KB images + user images + question
+        5. Calls vision_model_func (qwen3.7-flash) for multimodal answering
+
+        Args:
+            query: User query text
+            user_image_paths: List of paths to user-uploaded images
+            mode: Query mode ("local", "global", "hybrid", "naive", "mix", "bypass")
+            system_prompt: Optional system prompt
+            **kwargs: Other query parameters, passed to QueryParam
+
+        Returns:
+            str: Query result
+        """
+        # Ensure VLM is available
+        if not hasattr(self, "vision_model_func") or not self.vision_model_func:
+            raise ValueError(
+                "aquery_with_user_images requires vision_model_func. "
+                "Please provide a vision model function when initializing RAGAnything."
+            )
+
+        # Ensure LightRAG is initialized
+        init_result = await self._ensure_lightrag_initialized()
+        if not init_result or not init_result.get("success"):
+            raise RuntimeError(
+                f"LightRAG initialization failed: {(init_result or {}).get('error', 'unknown error')}"
+            )
+
+        self.logger.info(f"Executing user image query: {query[:100]}...")
+
+        # Clear previous image cache
+        if hasattr(self, "_current_images_base64"):
+            delattr(self, "_current_images_base64")
+
+        # 1. Retrieve knowledge base context (without generating final answer)
+        query_param = QueryParam(mode=mode, only_need_prompt=True, **kwargs)
+        raw_prompt = await self.lightrag.aquery(query, param=query_param)
+
+        self.logger.debug("Retrieved raw prompt from LightRAG")
+
+        # 2. Process KB image paths in the retrieved context
+        enhanced_prompt, kb_image_count = await self._process_image_paths_for_vlm(
+            raw_prompt
+        )
+
+        # 3. Encode user-provided images
+        user_images_base64 = []
+        if user_image_paths:
+            for img_path in user_image_paths:
+                try:
+                    b64 = encode_image_to_base64(img_path)
+                    if b64:
+                        user_images_base64.append(b64)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to encode user image {img_path}: {e}"
+                    )
+
+        # If no images at all, fall back to normal query
+        if not user_images_base64 and kb_image_count == 0:
+            self.logger.info("No images found, falling back to normal query")
+            query_param = QueryParam(mode=mode, **kwargs)
+            return await self.lightrag.aquery(
+                query, param=query_param, system_prompt=system_prompt
+            )
+
+        # 4. Append user images to the image list and add markers
+        kb_images = getattr(self, "_current_images_base64", [])
+        all_images = kb_images + user_images_base64
+        self._current_images_base64 = all_images
+
+        # Add user image markers to the prompt
+        if user_images_base64:
+            for i in range(len(user_images_base64)):
+                marker_idx = kb_image_count + i + 1
+                enhanced_prompt += (
+                    f"\n[User Uploaded Image {marker_idx}]\n[VLM_IMAGE_{marker_idx}]"
+                )
+
+        self.logger.info(
+            f"Total images for VLM: {len(all_images)} "
+            f"(KB: {kb_image_count}, User: {len(user_images_base64)})"
+        )
+
+        # 5. Build multimodal messages and call VLM
+        messages = self._build_vlm_messages_with_images(
+            enhanced_prompt, query, system_prompt
+        )
+        result = await self._call_vlm_with_multimodal_content(messages)
+
+        self.logger.info("User image query completed")
         return result
 
     async def _process_multimodal_query_content(

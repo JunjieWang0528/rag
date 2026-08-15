@@ -7,10 +7,18 @@ Contains helper functions for content separation, text insertion, and other util
 from __future__ import annotations
 
 import base64
+import contextvars
 import inspect
 from typing import Dict, List, Any, Tuple
 from pathlib import Path
 from lightrag.utils import logger
+
+
+# 上下文变量：用于在查询方法和 embedding 函数之间传递 instruct
+# 在查询前由 LLM 生成，embedding 时读取并传给 DashScope API
+query_instruct_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "query_instruct", default=None
+)
 
 
 def normalize_caption_list(value: Any) -> List[str]:

@@ -412,3 +412,21 @@ PROMPTS["QUERY_GENERIC_ANALYST_SYSTEM"] = (
 PROMPTS["QUERY_ENHANCEMENT_SUFFIX"] = (
     "\n\nPlease provide a comprehensive answer based on the user query and the provided multimodal content information."
 )
+
+# Instruct 生成 prompt：让 LLM 从用户查询中提取任务描述
+PROMPTS["INSTRUCT_GENERATION"] = """You are a query understanding assistant. Given a user's search query, generate a brief English task instruction for the embedding model. The instruct should describe what kind of content to retrieve.
+
+Examples:
+- Query: "机器学习论文推荐" -> Instruct: "Given a research paper query, retrieve relevant research paper"
+- Query: "今天天气怎么样" -> Instruct: "Given a weather query, retrieve relevant weather information"
+- Query: "Python list comprehension用法" -> Instruct: "Given a programming query, retrieve relevant technical documentation"
+- Query: "这张图里有什么产品" -> Instruct: "Given a product image query, retrieve relevant product information"
+
+Rules:
+1. Output ONLY the instruct text, no explanation or prefix
+2. Keep it under 120 characters
+3. Use English only
+4. Match the domain of the query
+
+User query: {query}
+Instruct:"""

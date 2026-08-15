@@ -1,4 +1,6 @@
-import requests, time, json, sys
+import requests
+import time
+import sys
 
 BASE = "http://localhost:8000"
 FILES = [
@@ -15,7 +17,8 @@ for fp in FILES:
     data = r.json()
     task_id = data.get("task_id")
     if not task_id:
-        print(f"  ERROR: {data}"); sys.exit(1)
+        print(f"  ERROR: {data}")
+        sys.exit(1)
     print(f"  task_id={task_id}")
     # poll until done
     for i in range(120):

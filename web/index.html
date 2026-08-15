@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG-Anything 智能知识问答</title>
+<style>
+:root {
+  --primary: #6d5dfc;
+  --primary-2: #4f8bff;
+  --grad: linear-gradient(135deg, #6d5dfc 0%, #4f8bff 50%, #38d9f0 100%);
+  --bg: #f4f6fb;
+  --card: #ffffff;
+  --text: #1f2430;
+  --muted: #7a8194;
+  --border: #e6e9f2;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --radius: 16px;
+  --shadow: 0 10px 30px rgba(45, 55, 120, 0.08);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.hero {
+  background: var(--grad);
+  color: #fff;
+  padding: 48px 24px 90px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before, .hero::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+}
+.hero::before { width: 320px; height: 320px; top: -120px; right: -80px; }
+.hero::after { width: 260px; height: 260px; bottom: -120px; left: -60px; }
+.hero h1 { font-size: 2.2rem; font-weight: 800; letter-spacing: 0.5px; position: relative; z-index: 1; }
+.hero p { margin-top: 12px; font-size: 1.05rem; opacity: 0.92; position: relative; z-index: 1; }
+.badge {
+  display: inline-block; margin-top: 18px; padding: 6px 16px;
+  background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 999px; font-size: 0.85rem; position: relative; z-index: 1;
+}
+.container { max-width: 900px; margin: -55px auto 60px; padding: 0 20px; position: relative; }
+.card {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 28px; margin-bottom: 24px; border: 1px solid var(--border);
+}
+.card h2 { font-size: 1.15rem; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+.card h2 .step-num {
+  width: 26px; height: 26px; border-radius: 50%; background: var(--grad);
+  color: #fff; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.85rem; font-weight: 700;
+}
+.dropzone {
+  border: 2px dashed #c3caf5; border-radius: var(--radius);
+  padding: 44px 24px; text-align: center; cursor: pointer;
+  transition: all 0.2s ease; background: #fafbff;
+}
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--primary); background: #f0f2ff; transform: translateY(-2px);
+}
+.dropzone .icon { font-size: 2.6rem; }
+.dropzone p { color: var(--muted); margin-top: 8px; font-size: 0.92rem; }
+.dropzone .sup { margin-top: 14px; font-size: 0.78rem; color: #aab0c4; }
+.btn {
+  border: none; cursor: pointer; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
+  padding: 12px 22px; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-primary { background: var(--grad); color: #fff; box-shadow: 0 6px 16px rgba(109,93,252,0.35); }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(109,93,252,0.45); }
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.btn-ghost { background: #eef0f8; color: var(--text); }
+.btn-ghost:hover { background: #e2e5f2; }
+.file-list { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.file-item {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  background: #f7f8fc; border: 1px solid var(--border); border-radius: 10px; font-size: 0.9rem;
+}
+.file-item .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item .fsize { color: var(--muted); font-size: 0.8rem; }
+.file-item .remove { cursor: pointer; color: var(--danger); background: none; border: none; font-size: 1.1rem; }
+.status-card { transition: all 0.3s ease; }
+.status { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 12px; font-size: 0.95rem; }
+.status.pending { background: #f3f4f6; color: var(--muted); }
+.status.processing { background: #eef5ff; color: #2563eb; }
+.status.done { background: #ecfdf3; color: var(--success); }
+.status.failed { background: #fef2f2; color: var(--danger); }
+.spinner {
+  width: 20px; height: 20px; border: 3px solid rgba(37,99,235,0.2);
+  border-top-color: var(--secondary, #2563eb); border-radius: 50%;
+  animation: spin 0.8s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.ready-pulse {
+  font-size: 1.05rem; font-weight: 700; color: var(--success);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+.query-area { display: flex; gap: 12px; }
+.query-area input {
+  flex: 1; padding: 14px 16px; border: 2px solid var(--border); border-radius: 12px;
+  font-size: 1rem; outline: none; transition: border-color 0.2s;
+}
+.query-area input:focus { border-color: var(--primary); }
+.btn-img {
+  background: #eef0f8; color: var(--text); padding: 12px 14px; flex-shrink: 0;
+}
+.btn-img:hover { background: #e2e5f2; }
+.btn-img.has-images { background: #eef2ff; color: var(--primary); }
+.query-img-list { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 10px; }
+.query-img-chip {
+  position: relative; width: 72px; height: 72px; border-radius: 10px;
+  overflow: hidden; border: 1px solid var(--border); background: #f7f8fc;
+}
+.query-img-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.query-img-chip .remove {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+  border: none; border-radius: 50%; background: rgba(15,23,42,0.7); color: #fff;
+  cursor: pointer; font-size: 0.85rem; line-height: 20px; padding: 0;
+}
+.query-img-hint { margin-top: 8px; font-size: 0.8rem; color: var(--muted); }
+.answer-box {
+  margin-top: 18px; padding: 18px; border-radius: 12px; background: #f8f9fd;
+  border: 1px solid var(--border); white-space: pre-wrap; line-height: 1.7; display: none;
+}
+.answer-box.show { display: block; animation: fadeIn 0.4s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.answer-box .label { font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+.hidden { display: none !important; }
+.mode-select {
+  padding: 10px 12px; border: 2px solid var(--border); border-radius: 12px;
+  font-size: 0.9rem; background: #fff; outline: none; cursor: pointer;
+}
+.grid-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.file-chip {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  background: #f7f8fc; border: 1px solid var(--border); border-radius: 10px; font-size: 0.82rem;
+}
+.file-chip .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .fmeta { color: var(--muted); font-size: 0.78rem; flex-shrink: 0; }
+.file-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex-shrink: 0; }
+.file-chip .del {
+  cursor: pointer; color: var(--muted); background: none; border: none; font-size: 1rem;
+  padding: 2px 4px; border-radius: 6px; flex-shrink: 0; opacity: 0.6; transition: all 0.15s ease;
+}
+.file-chip .del:hover { color: var(--danger); opacity: 1; background: #fef2f2; }
+.confirm-overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+  display: none; align-items: center; justify-content: center; z-index: 1000;
+}
+.confirm-overlay.show { display: flex; }
+.confirm-box {
+  background: #fff; border-radius: 14px; padding: 24px 28px; max-width: 420px; width: 90%;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+}
+.confirm-box h3 { font-size: 1.05rem; margin-bottom: 10px; }
+.confirm-box p { color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+.confirm-box .fname-strong { color: var(--text); font-weight: 600; word-break: break-all; }
+.confirm-box .actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; }
+.confirm-box .btn-cancel { background: #eef0f8; color: var(--text); }
+.confirm-box .btn-cancel:hover { background: #e2e5f2; }
+.confirm-box .btn-danger { background: var(--danger); color: #fff; }
+.confirm-box .btn-danger:hover { opacity: 0.9; }
+.toast {
+  position: fixed; top: 20px; right: 20px; padding: 14px 20px; border-radius: 12px;
+  color: #fff; font-size: 0.9rem; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  transform: translateX(120%); transition: transform 0.3s ease; z-index: 999; max-width: 340px;
+}
+.toast.show { transform: translateX(0); }
+.toast.error { background: var(--danger); }
+.toast.success { background: var(--success); }
+.toast.info { background: #2563eb; }
+footer { text-align: center; color: var(--muted); font-size: 0.82rem; padding: 20px; }
+@media (max-width: 600px) {
+  .hero h1 { font-size: 1.6rem; }
+  .query-area { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>RAG-Anything 智能知识问答</h1>
+  <p>上传文档 / 图片，自动解析并存入知识库，即可开始提问</p>
+  <span class="badge">多模态 RAG · 支持 PDF / 图片 / Office / 文本</span>
+</div>
+
+<div class="container">
+  <div class="card">
+    <h2><span class="step-num">1</span> 上传文档</h2>
+    <div class="dropzone" id="dropzone">
+      <div class="icon">📁</div>
+      <p><strong>点击选择</strong> 或 拖拽文件到此处</p>
+      <p style="font-size:0.85rem;color:#9aa1b8;">支持多文件上传</p>
+      <div class="sup">支持的格式：PDF、PNG、JPG、JPEG、BMP、TIFF、GIF、WEBP、DOC(X)、PPT(X)、XLS(X)、TXT、MD</div>
+    </div>
+    <input type="file" id="fileInput" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md">
+    <div class="file-list hidden" id="fileList"></div>
+    <div style="margin-top:20px;text-align:right;">
+      <button class="btn btn-primary" id="uploadBtn" disabled>上传并处理</button>
+    </div>
+  </div>
+
+  <div class="card status-card hidden" id="statusCard">
+    <h2><span class="step-num">2</span> 处理状态</h2>
+    <div class="status pending" id="statusBox">
+      <span class="spinner"></span>
+      <span id="statusText">准备中...</span>
+    </div>
+  </div>
+
+  <div class="card hidden" id="queryCard">
+    <h2><span class="step-num">3</span> 提问</h2>
+    <div class="query-area">
+      <input type="text" id="questionInput" placeholder="输入问题，QQ 截图后可直接 Ctrl+V 粘贴图片">
+      <button class="btn btn-img" id="queryImgBtn" type="button" title="添加图片">📎 图片</button>
+      <select class="mode-select" id="modeSelect">
+        <option value="hybrid">混合检索</option>
+        <option value="local">局部检索</option>
+        <option value="global">全局检索</option>
+        <option value="naive">简单检索</option>
+      </select>
+      <button class="btn btn-primary" id="askBtn">提问</button>
+    </div>
+    <input type="file" id="queryImgInput" multiple hidden accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/bmp">
+    <div class="query-img-list hidden" id="queryImgList"></div>
+    <div class="query-img-hint hidden" id="queryImgHint">已选择图片将与问题一起发送给视觉模型，也可 QQ 截图后 Ctrl+V 粘贴</div>
+    <div class="answer-box" id="answerBox">
+      <div class="label">回答</div>
+      <div id="answerText"></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="filesCard">
+    <div class="grid-header">
+      <h2><span class="step-num">4</span> 已入库文档</h2>
+      <span id="docsCount" style="color:var(--muted);font-size:0.85rem;"></span>
+    </div>
+    <div class="files-grid" id="filesGrid"></div>
+  </div>
+</div>
+
+<footer>RAG-Anything Web · FastAPI + 豆包 · 知识库存储于 rag_storage/</footer>
+
+<div class="toast" id="toast"></div>
+
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <h3>确认删除</h3>
+    <p>确定要从知识库中删除 <span class="fname-strong" id="confirmName"></span> 吗？</p>
+    <p style="margin-top:8px;color:#ef4444;font-size:0.82rem;">此操作将移除该文档的所有文本块、实体和关系，且不可恢复。</p>
+    <div class="actions">
+      <button class="btn btn-ghost btn-cancel" onclick="cancelDelete()">取消</button>
+      <button class="btn btn-danger" id="confirmDeleteBtn" onclick="doDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedFiles = [];
+let queryImages = [];
+let currentTaskId = null;
+let pollTimer = null;
+let deleteTarget = null;
+
+const $ = (id) => document.getElementById(id);
+const fmtSize = (bytes) => {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1048576).toFixed(1) + ' MB';
+};
+
+function showToast(msg, type='info') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(showToast._tm);
+  showToast._tm = setTimeout(() => t.className = 'toast', 3500);
+}
+
+function renderFileList() {
+  const list = $('fileList');
+  $('uploadBtn').disabled = selectedFiles.length === 0;
+  if (selectedFiles.length === 0) { list.classList.add('hidden'); list.innerHTML=''; return; }
+  list.classList.remove('hidden');
+  list.innerHTML = selectedFiles.map((f, i) => `
+    <div class="file-item">
+      <span>📄</span>
+      <span class="fname">${f.name}</span>
+      <span class="fsize">${fmtSize(f.size)}</span>
+      <button class="remove" onclick="removeFile(${i})">&times;</button>
+    </div>`).join('');
+}
+
+function removeFile(i) {
+  selectedFiles.splice(i, 1);
+  renderFileList();
+}
+
+function setStatus(status, text, pulse=false) {
+  const box = $('statusBox');
+  box.className = 'status ' + status;
+  if (status === 'processing') {
+    box.innerHTML = '<span class="spinner"></span><span id="statusText"></span>';
+  } else {
+    box.innerHTML = '<span id="statusText"></span>';
+  }
+  const t = $('statusText');
+  t.textContent = text;
+  if (pulse) t.className = 'ready-pulse';
+}
+
+// ---- 拖拽 / 点击选择 ----
+const dropzone = $('dropzone');
+const fileInput = $('fileInput');
+const ALLOWED = ['pdf','jpg','jpeg','png','bmp','tiff','tif','gif','webp','doc','docx','ppt','pptx','xls','xlsx','txt','md'];
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value=''; });
+
+function addFiles(files) {
+  const newFiles = Array.from(files).filter(f => {
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (!ALLOWED.includes(ext)) { showToast(`不支持的文件类型: ${f.name}`, 'error'); return false; }
+    return true;
+  });
+  selectedFiles = selectedFiles.concat(newFiles);
+  renderFileList();
+}
+
+// ---- 上传与轮询 ----
+$('uploadBtn').addEventListener('click', async () => {
+  if (selectedFiles.length === 0) return;
+  const btn = $('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = '上传中...';
+
+  const formData = new FormData();
+  selectedFiles.forEach(f => formData.append('files', f));
+
+  // 显示状态卡片
+  $('statusCard').classList.remove('hidden');
+  setStatus('pending', '正在上传...');
+
+  try {
+    const resp = await fetch('/upload', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || '上传失败');
+    }
+    const data = await resp.json();
+    currentTaskId = data.task_id;
+    setStatus('processing', '文档已接收，正在解析并存入知识库...');
+    showToast('文件已上传，开始处理', 'success');
+    selectedFiles = [];
+    renderFileList();
+    btn.textContent = '上传并处理';
+    startPolling(currentTaskId);
+  } catch (err) {
+    setStatus('failed', '上传失败: ' + err.message);
+    showToast('上传失败: ' + err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '上传并处理';
+  }
+});
+
+function startPolling(taskId) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/task/' + taskId);
+      if (!resp.ok) { clearInterval(pollTimer); return; }
+      const task = await resp.json();
+      switch (task.status) {
+        case 'pending':
+        case 'processing':
+          setStatus('processing', task.message);
+          break;
+        case 'done':
+          clearInterval(pollTimer);
+          pollTimer = null;
+          setStatus('done', '文档处理完成，可以提问了！', true);
+          showToast('所有文档处理完成！', 'success');
+          $('queryCard').classList.remove('hidden');
+          $('filesCard').classList.remove('hidden');
+          loadKnowledge();
+          break;
+        case 'failed':
+          clearInterval(pollTimer);
+          pollTimer = null;
+          setStatus('failed', '处理失败: ' + (task.error || '未知错误'));
+          showToast('处理失败: ' + (task.error || '未知错误'), 'error');
+          break;
+      }
+    } catch (e) {
+      // 网络错误时静默处理
+    }
+  }, 1500);
+}
+
+// ---- 提问区图片 ----
+const QUERY_IMG_TYPES = ['image/png','image/jpeg','image/jpg','image/gif','image/webp','image/bmp'];
+
+$('queryImgBtn').addEventListener('click', () => $('queryImgInput').click());
+$('queryImgInput').addEventListener('change', () => {
+  addQueryImages($('queryImgInput').files);
+  $('queryImgInput').value = '';
+});
+
+function collectClipboardImages(clipboardData) {
+  const files = [];
+  if (!clipboardData) return files;
+  const items = clipboardData.items ? Array.from(clipboardData.items) : [];
+  items.forEach((item, i) => {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        files.push(new File([file], `paste_${Date.now()}_${i}.${ext}`, { type: file.type || 'image/png' }));
+      }
+    }
+  });
+  if (files.length === 0 && clipboardData.files) {
+    Array.from(clipboardData.files).forEach((file) => {
+      if (file && file.type && file.type.startsWith('image/')) files.push(file);
+    });
+  }
+  return files;
+}
+
+function handleQueryPaste(e) {
+  const files = collectClipboardImages(e.clipboardData);
+  if (files.length === 0) return;
+  e.preventDefault();
+  addQueryImages(files);
+  showToast(`已粘贴 ${files.length} 张图片`, 'success');
+}
+
+$('questionInput').addEventListener('paste', handleQueryPaste);
+
+function addQueryImages(files) {
+  const incoming = Array.from(files).filter(f => {
+    if (!QUERY_IMG_TYPES.includes(f.type) && !/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)) {
+      showToast(`不支持的图片类型: ${f.name}`, 'error');
+      return false;
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      showToast(`图片过大（上限 10MB）: ${f.name}`, 'error');
+      return false;
+    }
+    return true;
+  });
+  queryImages = queryImages.concat(incoming);
+  renderQueryImages();
+}
+
+function removeQueryImage(i) {
+  queryImages.splice(i, 1);
+  renderQueryImages();
+}
+
+function renderQueryImages() {
+  const list = $('queryImgList');
+  const hint = $('queryImgHint');
+  const btn = $('queryImgBtn');
+  if (queryImages.length === 0) {
+    list.classList.add('hidden');
+    hint.classList.add('hidden');
+    list.innerHTML = '';
+    btn.classList.remove('has-images');
+    btn.textContent = '📎 图片';
+    return;
+  }
+  list.classList.remove('hidden');
+  hint.classList.remove('hidden');
+  btn.classList.add('has-images');
+  btn.textContent = `📎 图片(${queryImages.length})`;
+  list.innerHTML = queryImages.map((f, i) => `
+    <div class="query-img-chip">
+      <img src="${URL.createObjectURL(f)}" alt="${esc(f.name)}">
+      <button class="remove" type="button" onclick="removeQueryImage(${i})" title="移除">&times;</button>
+    </div>`).join('');
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('读取图片失败: ' + file.name));
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---- 查询 ----
+$('askBtn').addEventListener('click', askQuestion);
+$('questionInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askQuestion(); }
+});
+
+async function askQuestion() {
+  const input = $('questionInput');
+  const question = input.value.trim();
+  if (!question) { showToast('请输入问题', 'info'); return; }
+  const btn = $('askBtn');
+  btn.disabled = true;
+  btn.textContent = '检索中...';
+  $('answerBox').classList.remove('show');
+  $('answerText').textContent = '';
+
+  try {
+    let images = [];
+    if (queryImages.length > 0) {
+      images = await Promise.all(queryImages.map(fileToDataUrl));
+    }
+    const payload = { question, mode: $('modeSelect').value };
+    if (images.length > 0) payload.images = images;
+    const resp = await fetch('/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || '查询失败');
+    }
+    const data = await resp.json();
+    $('answerText').textContent = data.answer;
+    $('answerBox').classList.add('show');
+  } catch (err) {
+    showToast('查询失败: ' + err.message, 'error');
+    $('answerText').textContent = '查询失败: ' + err.message;
+    $('answerBox').classList.add('show');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '提问';
+  }
+}
+
+// ---- 加载文件列表 ----
+async function loadFiles() {
+  try {
+    const resp = await fetch('/files');
+    const data = await resp.json();
+    const grid = $('filesGrid');
+    if (!data.files || data.files.length === 0) {
+      grid.innerHTML = '<p style="color:var(--muted);font-size:0.9rem;">暂无已上传文件</p>';
+      return;
+    }
+    grid.innerHTML = data.files.map(f => `
+      <div class="file-chip">
+        <span class="dot"></span>
+        <span class="fname">${f.name}</span>
+      </div>`).join('');
+  } catch (e) {
+    // ignore
+  }
+}
+
+// ---- 加载知识库中已入库的文档（重启后依然存在） ----
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function loadKnowledge() {
+  try {
+    const resp = await fetch('/knowledge');
+    const data = await resp.json();
+    const grid = $('filesGrid');
+    const countEl = $('docsCount');
+    if (!data.docs || data.docs.length === 0) {
+      grid.innerHTML = '<p style="color:var(--muted);font-size:0.9rem;">知识库为空</p>';
+      countEl.textContent = '';
+      return;
+    }
+    countEl.textContent = data.docs.length + ' 个文档';
+    grid.innerHTML = data.docs.map(d => `
+      <div class="file-chip" title="${esc(d.doc_id)}" data-docid="${esc(d.doc_id)}" data-dname="${esc(d.name)}">
+        <span class="dot"></span>
+        <span class="fname">${esc(d.name)}</span>
+        <span class="fmeta">${Number(d.chunks_count) || 0}</span>
+        <button class="del" title="从知识库删除">&times;</button>
+      </div>`).join('');
+    grid.querySelectorAll('.del').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const chip = e.target.closest('.file-chip');
+        startDelete(chip.dataset.docid, chip.dataset.dname);
+      });
+    });
+  } catch (e) {
+    // ignore
+  }
+}
+
+function startDelete(docId, name) {
+  deleteTarget = { docId, name };
+  $('confirmName').textContent = name || docId;
+  $('confirmOverlay').classList.add('show');
+}
+
+function cancelDelete() {
+  deleteTarget = null;
+  $('confirmOverlay').classList.remove('show');
+}
+
+async function doDelete() {
+  if (!deleteTarget) return;
+  const { docId, name } = deleteTarget;
+  const btn = $('confirmDeleteBtn');
+  btn.disabled = true;
+  btn.textContent = '删除中...';
+  try {
+    const resp = await fetch('/knowledge/' + docId, { method: 'DELETE' });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || '删除失败');
+    }
+    showToast('已删除: ' + (name || docId), 'success');
+    cancelDelete();
+    loadKnowledge();
+  } catch (err) {
+    showToast('删除失败: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '删除';
+  }
+}
+
+// 页面加载时，尝试恢复知识库中已入库的文档
+(async function initKnowledge() {
+  try {
+    const resp = await fetch('/knowledge');
+    const data = await resp.json();
+    if (data.docs && data.docs.length > 0) {
+      $('queryCard').classList.remove('hidden');
+      $('filesCard').classList.remove('hidden');
+      loadKnowledge();
+      setStatus('done', `已加载知识库中的 ${data.count} 个文档，可以直接提问`, true);
+    }
+  } catch (e) {
+    // ignore
+  }
+})();
+</script>
+</body>
+</html>

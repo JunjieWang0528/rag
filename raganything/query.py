@@ -506,6 +506,53 @@ class QueryMixin:
         self.logger.info("VLM enhanced query completed")
         return result
 
+    async def _extract_search_keywords_from_images(
+        self, images_base64: List[str]
+    ) -> str | None:
+        """Ask VLM to extract retrieval keywords from user images.
+
+        Returns a comma-separated keyword string, or None on failure.
+        """
+        if not images_base64:
+            return None
+        try:
+            prompt = PROMPTS["QUERY_IMAGE_KEYWORDS"]
+            system_prompt = PROMPTS["QUERY_IMAGE_KEYWORDS_SYSTEM"]
+            if len(images_base64) == 1:
+                result = await self.vision_model_func(
+                    prompt,
+                    image_data=images_base64[0],
+                    system_prompt=system_prompt,
+                )
+            else:
+                content = [{"type": "text", "text": prompt}]
+                for b64 in images_base64:
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                        }
+                    )
+                result = await self.vision_model_func(
+                    "",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": content},
+                    ],
+                )
+            keywords = (result or "").strip().strip("\"'")
+            keywords = keywords.split("\n")[0].strip()
+            keywords = re.sub(r"^[*`#\-\s]+", "", keywords).strip()
+            if not keywords:
+                return None
+            if len(keywords) > 400:
+                keywords = keywords[:400]
+            self.logger.info(f"Extracted image keywords: {keywords}")
+            return keywords
+        except Exception as e:
+            self.logger.warning(f"Failed to extract keywords from user images: {e}")
+            return None
+
     async def aquery_with_user_images(
         self,
         query: str,
@@ -519,11 +566,13 @@ class QueryMixin:
         retrieval for comprehensive VLM answering.
 
         Flow:
-        1. LightRAG retrieves relevant context from knowledge base (text only)
-        2. Scans context for Image Path: markers, encodes KB images to base64
-        3. Encodes user-provided images to base64
-        4. Builds multimodal messages: context + KB images + user images + question
-        5. Calls vision_model_func (qwen3.7-flash) for multimodal answering
+        1. Encode user images and ask VLM to extract retrieval keywords
+        2. Retrieve knowledge base context using original query + keywords
+        3. Scan context for Image Path: markers, encode KB images to base64
+        4. Build multimodal messages: context + KB images + user images + original question
+        5. Call vision_model_func for multimodal answering
+
+        If keyword extraction fails, retrieval falls back to the original query.
 
         Args:
             query: User query text
@@ -555,18 +604,7 @@ class QueryMixin:
         if hasattr(self, "_current_images_base64"):
             delattr(self, "_current_images_base64")
 
-        # 1. Retrieve knowledge base context (without generating final answer)
-        query_param = QueryParam(mode=mode, only_need_prompt=True, **kwargs)
-        raw_prompt = await self.lightrag.aquery(query, param=query_param)
-
-        self.logger.debug("Retrieved raw prompt from LightRAG")
-
-        # 2. Process KB image paths in the retrieved context
-        enhanced_prompt, kb_image_count = await self._process_image_paths_for_vlm(
-            raw_prompt
-        )
-
-        # 3. Encode user-provided images
+        # 1. Encode user-provided images first (needed for keyword extraction)
         user_images_base64 = []
         if user_image_paths:
             for img_path in user_image_paths:
@@ -579,6 +617,34 @@ class QueryMixin:
                         f"Failed to encode user image {img_path}: {e}"
                     )
 
+        # 2. Look at user images to extract retrieval keywords, then rewrite search query.
+        #    Final answering still uses the original user question.
+        search_query = query
+        if user_images_base64:
+            keywords = await self._extract_search_keywords_from_images(
+                user_images_base64
+            )
+            if keywords:
+                search_query = f"{query} {keywords}"
+                self.logger.info(
+                    f"Rewrote search query with image keywords: {search_query[:200]}..."
+                )
+            else:
+                self.logger.info(
+                    "Image keyword extraction failed, using original query for retrieval"
+                )
+
+        # 3. Retrieve knowledge base context (without generating final answer)
+        query_param = QueryParam(mode=mode, only_need_prompt=True, **kwargs)
+        raw_prompt = await self.lightrag.aquery(search_query, param=query_param)
+
+        self.logger.debug("Retrieved raw prompt from LightRAG")
+
+        # 4. Process KB image paths in the retrieved context
+        enhanced_prompt, kb_image_count = await self._process_image_paths_for_vlm(
+            raw_prompt
+        )
+
         # If no images at all, fall back to normal query
         if not user_images_base64 and kb_image_count == 0:
             self.logger.info("No images found, falling back to normal query")
@@ -587,7 +653,7 @@ class QueryMixin:
                 query, param=query_param, system_prompt=system_prompt
             )
 
-        # 4. Append user images to the image list and add markers
+        # 5. Append user images to the image list and add markers
         kb_images = getattr(self, "_current_images_base64", [])
         all_images = kb_images + user_images_base64
         self._current_images_base64 = all_images
@@ -605,7 +671,7 @@ class QueryMixin:
             f"(KB: {kb_image_count}, User: {len(user_images_base64)})"
         )
 
-        # 5. Build multimodal messages and call VLM
+        # 6. Build multimodal messages and call VLM
         messages = self._build_vlm_messages_with_images(
             enhanced_prompt, query, system_prompt
         )

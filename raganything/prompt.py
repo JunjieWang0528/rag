@@ -369,6 +369,19 @@ PROMPTS["QUERY_IMAGE_ANALYST_SYSTEM"] = (
     "You are a professional image analyst who can accurately describe image content."
 )
 
+PROMPTS["QUERY_IMAGE_KEYWORDS_SYSTEM"] = (
+    "You extract search keywords from images for document retrieval. "
+    "Output only keywords, nothing else."
+)
+
+PROMPTS["QUERY_IMAGE_KEYWORDS"] = (
+    "Read all visible text and key entities in this image. "
+    "Output 5-15 search keywords for retrieving the source document from a knowledge base. "
+    "Include organization names, project titles, document titles, and distinctive nouns. "
+    "Output ONLY a single comma-separated line. No explanation, no numbering, no markdown. "
+    "Example: 中国铁塔河南省分公司, 视频孪生, 机场净空障碍物, 比选方案汇报材料"
+)
+
 PROMPTS[
     "QUERY_TABLE_ANALYSIS"
 ] = """Please analyze the main content, structure, and key information of the following table data:

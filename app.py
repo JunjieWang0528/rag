@@ -468,57 +468,89 @@ async def list_files():
     return {"files": results}
 
 
+def _get_status_value(status):
+    """兼容 DocStatus 枚举和字符串两种类型"""
+    return status.value if hasattr(status, "value") else status
+
+
 @app.get("/knowledge")
 async def list_knowledge():
     """列出知识库中已入库（已处理）的文档，重启后依然存在"""
-    doc_status_file = WORKING_DIR / "kv_store_doc_status.json"
-    docs = []
-    if doc_status_file.exists():
-        try:
-            data = json.loads(doc_status_file.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-        for doc_id, meta in data.items():
-            if not isinstance(meta, dict):
-                continue
-            if meta.get("status") not in ("processed", "done", "completed"):
-                continue
-            docs.append(
-                {
-                    "doc_id": doc_id,
-                    "name": meta.get("file_path", doc_id),
-                    "status": meta.get("status", "processed"),
-                    "chunks_count": meta.get("chunks_count", 0),
-                    "content_length": meta.get("content_length", 0),
-                    "created_at": meta.get("created_at", ""),
-                    "content_summary": (meta.get("content_summary", "") or "")[:200],
-                }
+    try:
+        rag = get_rag()
+        init_result = await rag._ensure_lightrag_initialized()
+        if init_result and not init_result.get("success"):
+            raise RuntimeError(f"LightRAG init failed: {init_result.get('error')}")
+
+        doc_status_storage = rag.lightrag.doc_status
+        if hasattr(doc_status_storage, "get_docs_paginated"):
+            # PostgreSQL / other DB-backed storage: use paginated query
+            results, total = await doc_status_storage.get_docs_paginated(
+                page=1, page_size=200
             )
-    return {"docs": docs, "count": len(docs)}
+            docs = []
+            for doc_id, status_obj in results:
+                if _get_status_value(status_obj.status) not in (
+                    "processed",
+                    "done",
+                    "completed",
+                ):
+                    continue
+                docs.append(
+                    {
+                        "doc_id": doc_id,
+                        "name": status_obj.file_path or doc_id,
+                        "status": _get_status_value(status_obj.status),
+                        "chunks_count": status_obj.chunks_count or 0,
+                        "content_length": status_obj.content_length,
+                        "created_at": status_obj.created_at,
+                        "content_summary": (status_obj.content_summary or "")[:200],
+                    }
+                )
+            return {"docs": docs, "count": len(docs)}
+        else:
+            # Fallback: JSON file-based storage
+            from lightrag.base import DocStatus
+
+            processed_docs = await doc_status_storage.get_docs_by_status(
+                DocStatus.PROCESSED
+            )
+            docs = []
+            for doc_id, status_obj in processed_docs.items():
+                docs.append(
+                    {
+                        "doc_id": doc_id,
+                        "name": status_obj.file_path or doc_id,
+                        "status": _get_status_value(status_obj.status),
+                        "chunks_count": status_obj.chunks_count or 0,
+                        "content_length": status_obj.content_length,
+                        "created_at": status_obj.created_at,
+                        "content_summary": (status_obj.content_summary or "")[:200],
+                    }
+                )
+            return {"docs": docs, "count": len(docs)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"获取知识库列表失败: {exc}")
 
 
 @app.delete("/knowledge/{doc_id}")
 async def delete_knowledge(doc_id: str):
     """从知识库中删除指定文档及其关联的 chunks / entities / relationships"""
-    doc_status_file = WORKING_DIR / "kv_store_doc_status.json"
-    docs = {}
-    if doc_status_file.exists():
-        try:
-            docs = json.loads(doc_status_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    if doc_id not in docs:
-        raise HTTPException(status_code=404, detail=f"文档不存在: {doc_id}")
-
     try:
         rag = get_rag()
-        # LightRAG is lazily initialized on first document upload; ensure it's
-        # ready before we try to delete from it.
         init_result = await rag._ensure_lightrag_initialized()
         if init_result and not init_result.get("success"):
             raise RuntimeError(f"LightRAG init failed: {init_result.get('error')}")
+
+        doc_status_storage = rag.lightrag.doc_status
+        existing = await doc_status_storage.get_by_id(doc_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"文档不存在: {doc_id}")
+
+        name = existing.get("file_path", doc_id) if isinstance(existing, dict) else (
+            getattr(existing, "file_path", None) or doc_id
+        )
         result = await rag.lightrag.adelete_by_doc_id(doc_id)
-        name = docs[doc_id].get("file_path", doc_id)
         return {"ok": True, "doc_id": doc_id, "name": name, "detail": str(result)}
     except HTTPException:
         raise
